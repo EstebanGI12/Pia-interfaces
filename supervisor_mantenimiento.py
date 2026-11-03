@@ -26,7 +26,7 @@ BG_ACTIVE_MENU = "#184555"
 GREEN = "#00e676"
 YELLOW = "#ffd600"
 RED = "#ff4444"
-ORANGE = "#ff9800"
+ORANGE = "#a86b0f"
 
 class SupervisorMantenimientoApp(ctk.CTk):
     def __init__(self):
@@ -78,11 +78,11 @@ class SupervisorMantenimientoApp(ctk.CTk):
         self.cambiar_vista("PANEL")
         
         self.alarm_btn_ref = None
-        self.alarm_estado_blink = True
+        self.estado_planta_ref = None
         self.alerta_mostrada = False
         
         self.verificar_falla_general()
-        self.iniciar_tintineo_alerta()
+        self.actualizar_estado_alerta()
         self.sembrar_almacen_si_vacio()
         self.sincronizar_fallas_tickets()
 
@@ -154,46 +154,44 @@ class SupervisorMantenimientoApp(ctk.CTk):
             pass
         self.after(3000, self.verificar_falla_general)
 
-    def iniciar_tintineo_alerta(self):
-        """ Actualiza únicamente el botón superior sin recargar toda la vista para evitar bloqueos """
+    def actualizar_estado_alerta(self):
         try:
-            _, _, _, pendientes = self.obtener_resumen()
+            disp, _, total_maq, pendientes, maquinas_falla = self.obtener_resumen()
             if self.alarm_btn_ref and self.alarm_btn_ref.winfo_exists():
-                if pendientes > 0:
-                    self.alarm_btn_ref.configure(text=f"⚠️ {pendientes} TICKET(S) PENDIENTE(S)")
-                    if self.alarm_estado_blink:
-                        self.alarm_btn_ref.configure(fg_color="#ff1111", text_color="white", border_color="white")
-                        self.alarm_estado_blink = False
-                    else:
-                        self.alarm_btn_ref.configure(fg_color="#3d1c23", text_color=RED, border_color=RED)
-                        self.alarm_estado_blink = True
+                if maquinas_falla > 0 or pendientes > 0:
+                    texto = "Error en la planta" if maquinas_falla > 0 else f"⚠️ {pendientes} TICKET(S) PENDIENTE(S)"
+                    self.alarm_btn_ref.configure(
+                        text=texto,
+                        fg_color="#3d1c23",
+                        text_color=RED,
+                        border_color=RED,
+                    )
                 else:
                     self.alarm_btn_ref.configure(text="✔️ PLANTA FUNCIONANDO", fg_color="#104a25", text_color=GREEN, border_color=GREEN)
+
+            if self.estado_planta_ref and self.estado_planta_ref.winfo_exists():
+                if maquinas_falla > 0:
+                    self.estado_planta_ref.configure(text="Error en la planta", text_color=RED)
+                elif pendientes == 0 and total_maq > 0 and disp == 100:
+                    self.estado_planta_ref.configure(text="ÓPTIMO", text_color=GREEN)
+                else:
+                    self.estado_planta_ref.configure(text="MANTENIMIENTO\nREQUERIDO", text_color=YELLOW)
         except:
             pass
-        self.after(800, self.iniciar_tintineo_alerta)
+        self.after(3000, self.actualizar_estado_alerta)
 
     def mostrar_alerta_general(self):
         self.alerta_mostrada = True
         self.alerta_frame = ctk.CTkFrame(self, fg_color="#5e0000", corner_radius=0)
         self.alerta_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
         
-        self.lbl_falla = ctk.CTkLabel(self.alerta_frame, text="⚠️ FALLA GENERAL DE PLANTA ⚠️", font=("Arial", 50, "bold"), text_color="white")
+        self.lbl_falla = ctk.CTkLabel(self.alerta_frame, text="Error en la planta", font=("Arial", 50, "bold"), text_color="white")
         self.lbl_falla.pack(expand=True, pady=(80, 10))
         
         ctk.CTkLabel(self.alerta_frame, text="TODAS LAS MÁQUINAS ESTÁN FUERA DE SERVICIO", font=("Arial", 30, "bold"), text_color="#ffcc00").pack(pady=10)
         ctk.CTkLabel(self.alerta_frame, text="POR SEGURIDAD, SE REQUIERE DETENER TODOS LOS\nPROCESOS DISPONIBLES DURANTE 1 MINUTO.", font=("Arial", 24), text_color="white", justify="center").pack(pady=30)
         
         ctk.CTkButton(self.alerta_frame, text="Esperando intervención de Mantenimiento...", font=("Arial", 18), fg_color="#330000", hover_color="#330000", state="disabled", height=50, width=450).pack(pady=40)
-        
-        self.parpadear_alerta()
-
-    def parpadear_alerta(self):
-        if self.alerta_mostrada and hasattr(self, 'lbl_falla'):
-            current_color = self.lbl_falla.cget("text_color")
-            next_color = RED if current_color == "white" else "white"
-            self.lbl_falla.configure(text_color=next_color)
-            self.after(600, self.parpadear_alerta)
 
     def ocultar_alerta_general(self):
         self.alerta_mostrada = False
@@ -213,12 +211,15 @@ class SupervisorMantenimientoApp(ctk.CTk):
             
             c.execute("SELECT COUNT(*) FROM alertas WHERE estado_ticket='PENDIENTE'")
             tickets_pendientes = c.fetchone()[0]
+
+            c.execute("SELECT COUNT(*) FROM maquinas WHERE estado='FALLA'")
+            maquinas_falla = c.fetchone()[0]
             
             conn.close()
             disp = round((maq_activas / total_maq) * 100, 1) if total_maq > 0 else 0
-            return disp, maq_activas, total_maq, tickets_pendientes
+            return disp, maq_activas, total_maq, tickets_pendientes, maquinas_falla
         except:
-            return 0.0, 0, 0, 0
+            return 0.0, 0, 0, 0, 0
 
     def obtener_maquinas(self):
         try:
@@ -278,6 +279,7 @@ class SupervisorMantenimientoApp(ctk.CTk):
 
     def cambiar_vista(self, vista):
         self.vista_actual = vista
+        self.estado_planta_ref = None
         self.limpiar_contenido()
         self.actualizar_botones_sidebar(vista)
         
@@ -292,8 +294,12 @@ class SupervisorMantenimientoApp(ctk.CTk):
         ctk.CTkLabel(header, text="DIA: 30-10-2026", font=("Arial", 12), text_color="lightgray").pack(side="left", padx=20)
         ctk.CTkLabel(header, text="🕒 HORA: TURNO 1 📶", font=("Arial", 12), text_color="lightgray").pack(side="left", padx=20)
         
-        _, _, _, pendientes = self.obtener_resumen()
-        if pendientes > 0:
+        _, _, _, pendientes, maquinas_falla = self.obtener_resumen()
+        if maquinas_falla > 0:
+            alerta_texto = "Error en la planta"
+            alerta_color = RED
+            bg_col = "#3d1c23"
+        elif pendientes > 0:
             alerta_texto = f"⚠️ {pendientes} TICKET(S) PENDIENTE(S)"
             alerta_color = RED
             bg_col = "#3d1c23"
@@ -305,7 +311,7 @@ class SupervisorMantenimientoApp(ctk.CTk):
         self.alarm_btn_ref = ctk.CTkButton(header, text=alerta_texto, 
                                            fg_color=bg_col, 
                                            text_color=alerta_color, border_color=alerta_color, border_width=1, 
-                                           hover_color="#4a1c23" if pendientes > 0 else "#166b36")
+                                           hover_color="#4a1c23" if maquinas_falla > 0 or pendientes > 0 else "#166b36")
         self.alarm_btn_ref.pack(side="right", padx=10)
         
         ctk.CTkLabel(header, text="👤 SUPERVISOR MANTENIMIENTO", font=("Arial", 12), text_color="lightgray").pack(side="right", padx=20)
@@ -332,14 +338,15 @@ class SupervisorMantenimientoApp(ctk.CTk):
         ctk.CTkLabel(titles_inner, text="SUPERVISIÓN DE PLANTA", font=("Arial", 24, "bold"), text_color="white").pack(anchor="w")
         ctk.CTkLabel(titles_inner, text="PANEL GENERAL", font=("Arial", 16), text_color="white").pack(anchor="w")
         
-        disp, maq_activas, total_maq, tickets_pendientes = self.obtener_resumen()
+        disp, maq_activas, total_maq, tickets_pendientes, maquinas_falla = self.obtener_resumen()
         
         kpi_frame = ctk.CTkFrame(parent, fg_color="transparent")
         kpi_frame.pack(fill="x", pady=10)
-        kpi_frame.grid_columnconfigure((0,1,2,3), weight=1)
+        kpi_frame.grid_columnconfigure((0, 1, 2, 3), weight=0, minsize=250)
+        kpi_frame.grid_anchor("center")
         
-        box1 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, height=130)
-        box1.grid(row=0, column=0, sticky="nsew", padx=5)
+        box1 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, width=250, height=130)
+        box1.grid(row=0, column=0, padx=5)
         box1.grid_propagate(False)
         ctk.CTkLabel(box1, text="DISPONIBILIDAD GLOBAL", font=("Arial", 11, "bold"), text_color="white").pack(pady=(10, 0))
         
@@ -351,8 +358,8 @@ class SupervisorMantenimientoApp(ctk.CTk):
         canvas.create_arc(10, 10, 130, 130, start=180-extent_val, extent=extent_val, outline=color_disp, width=12, style="arc")
         ctk.CTkLabel(box1, text=f"{disp}%", font=("Arial", 20, "bold"), text_color="white", bg_color=BG_CARD).place(relx=0.5, rely=0.7, anchor="center")
         
-        box2 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, height=130)
-        box2.grid(row=0, column=1, sticky="nsew", padx=5)
+        box2 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, width=250, height=130)
+        box2.grid(row=0, column=1, padx=5)
         box2.grid_propagate(False)
         ctk.CTkLabel(box2, text="MÁQUINAS OPERANDO", font=("Arial", 12, "bold"), text_color="white").pack(pady=(10, 15))
         ctk.CTkLabel(box2, text=f"{maq_activas} / {total_maq}", font=("Arial", 28, "bold"), text_color="white").pack()
@@ -362,8 +369,8 @@ class SupervisorMantenimientoApp(ctk.CTk):
         prog.set(maq_activas/total_maq if total_maq>0 else 0)
         prog.pack(side="left", fill="x", expand=True)
 
-        box3 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, height=130)
-        box3.grid(row=0, column=2, sticky="nsew", padx=5)
+        box3 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, width=250, height=130)
+        box3.grid(row=0, column=2, padx=5)
         box3.grid_propagate(False)
         ctk.CTkLabel(box3, text="TICKETS PENDIENTES", font=("Arial", 12, "bold"), text_color="white").pack(pady=(10, 10))
         ctk.CTkLabel(box3, text=str(tickets_pendientes), font=("Arial", 32, "bold"), text_color=RED if tickets_pendientes > 0 else GREEN).pack()
@@ -372,15 +379,20 @@ class SupervisorMantenimientoApp(ctk.CTk):
         else:
             ctk.CTkLabel(box3, text="TODO AL DÍA", font=("Arial", 11, "bold"), text_color=GREEN).pack(pady=5)
 
-        box4 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, height=130)
-        box4.grid(row=0, column=3, sticky="nsew", padx=5)
+        box4 = ctk.CTkFrame(kpi_frame, fg_color=BG_CARD, corner_radius=10, width=250, height=130)
+        box4.grid(row=0, column=3, padx=5)
         box4.grid_propagate(False)
         ctk.CTkLabel(box4, text="ESTADO DE LA PLANTA", font=("Arial", 12, "bold"), text_color="white").pack(pady=(10, 15))
-        if tickets_pendientes == 0 and disp == 100:
-            ctk.CTkLabel(box4, text="ÓPTIMO", font=("Arial", 26, "bold"), text_color=GREEN).pack()
+        if maquinas_falla > 0:
+            estado_texto, estado_color = "Error en la planta", RED
+        elif tickets_pendientes == 0 and disp == 100:
+            estado_texto, estado_color = "ÓPTIMO", GREEN
         else:
-            ctk.CTkLabel(box4, text="MANTENIMIENTO", font=("Arial", 22, "bold"), text_color=YELLOW).pack()
-            ctk.CTkLabel(box4, text="REQUERIDO", font=("Arial", 16, "bold"), text_color=YELLOW).pack(pady=5)
+            estado_texto, estado_color = "MANTENIMIENTO\nREQUERIDO", YELLOW
+        self.estado_planta_ref = ctk.CTkLabel(
+            box4, text=estado_texto, font=("Arial", 20, "bold"), text_color=estado_color
+        )
+        self.estado_planta_ref.pack(pady=10)
 
         est_wrap = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=10)
         est_wrap.pack(fill="both", expand=True, pady=(20, 0))
@@ -394,9 +406,9 @@ class SupervisorMantenimientoApp(ctk.CTk):
         est_flow = ctk.CTkFrame(est_wrap, fg_color="transparent")
         est_flow.pack(fill="both", expand=True, padx=20, pady=15)
         
-        est_flow.grid_columnconfigure((0,2,4,6), weight=3)
-        est_flow.grid_columnconfigure((1,3,5), weight=1)
-        est_flow.grid_rowconfigure(0, weight=1)
+        est_flow.grid_columnconfigure((0, 2, 4, 6), weight=0, minsize=240)
+        est_flow.grid_columnconfigure((1, 3, 5), weight=0, minsize=15)
+        est_flow.grid_anchor("center")
         
         maquinas_bd = self.obtener_maquinas()
         
@@ -414,8 +426,9 @@ class SupervisorMantenimientoApp(ctk.CTk):
             else:
                 color, bg_status, icon = YELLOW, "#4a4210", "⏸️ "
                 
-            box = ctk.CTkFrame(est_flow, fg_color=BG_STATION, corner_radius=10, border_color="#3a464f", border_width=1)
-            box.grid(row=0, column=i*2, sticky="nsew")
+            box = ctk.CTkFrame(est_flow, fg_color=BG_STATION, corner_radius=10, width=240, height=440, border_color="#3a464f", border_width=1)
+            box.grid(row=0, column=i*2)
+            box.grid_propagate(False)
             ctk.CTkLabel(box, text=f"{id_maq}:\n{nombre}", font=("Arial", 14, "bold"), justify="left").pack(anchor="w", padx=15, pady=(20, 20))
             status_btn = ctk.CTkButton(box, text=f"{icon}{estado}", fg_color=bg_status, text_color=color, font=("Arial", 14, "bold"), hover=False, corner_radius=8)
             status_btn.pack(fill="x", padx=15, pady=(0, 20), side="bottom")
@@ -431,7 +444,8 @@ class SupervisorMantenimientoApp(ctk.CTk):
         
         grid_maq = ctk.CTkFrame(scroll_maq, fg_color="transparent")
         grid_maq.pack(fill="both", expand=True)
-        grid_maq.grid_columnconfigure((0, 1, 2), weight=1)
+        grid_maq.grid_columnconfigure((0, 1, 2), weight=0, minsize=340)
+        grid_maq.grid_anchor("center")
         
         maquinas_bd = self.obtener_maquinas()
         
@@ -453,8 +467,8 @@ class SupervisorMantenimientoApp(ctk.CTk):
             else:
                 t_color = ORANGE
                 
-            card = ctk.CTkFrame(grid_maq, fg_color=BG_STATION, corner_radius=12, border_color=b_color, border_width=1)
-            card.grid(row=row, column=col, sticky="nsew", padx=10, pady=10)
+            card = ctk.CTkFrame(grid_maq, fg_color=BG_STATION, corner_radius=12, width=340, border_color=b_color, border_width=1)
+            card.grid(row=row, column=col, padx=10, pady=10)
             
             ctk.CTkLabel(card, text=f"{id_maq} - {nombre}", font=("Arial", 14, "bold"), text_color="white", anchor="w").pack(fill="x", padx=15, pady=(15, 5))
             
